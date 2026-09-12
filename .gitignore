@@ -9,6 +9,16 @@ __pycache__/
 win_key_test.png
 prog_test.txt
 
+# Transient test-run output captures
+e2e_out.txt
+e2e_err.txt
+min_out*.txt
+min_err*.txt
+bisect_out.txt
+bisect_err.txt
+vis_out.txt
+vis_err.txt
+
 # OS junk
 Thumbs.db
 desktop.ini

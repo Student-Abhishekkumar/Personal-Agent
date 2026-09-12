@@ -60,7 +60,11 @@ from pydantic_ai.usage import UsageLimits
 
 AGENT_NAME = "Personal Agent"
 
-DEFAULT_MODEL = os.environ.get("OLLAMA_MODEL", "ornith-1.5:9b")
+# Models used as the default MUST advertise the "tools" capability in Ollama
+# (`ollama show <model>`); ornith-1.5:9b does not, and without native tool
+# calling the model fakes tool calls in plain text, which fails output
+# parsing ("Exceeded maximum output retries").
+DEFAULT_MODEL = os.environ.get("OLLAMA_MODEL", "qwen3:4b")
 DEFAULT_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434/v1")
 
 PROJECT_DIR = Path(__file__).resolve().parent
@@ -989,6 +993,210 @@ def list_notes() -> str:
     return "\n".join(f"- {k}: {v}" for k, v in notes.items())
 
 
+# ---------------------------------------------------------------------------
+# Desktop tools — vision (screenshot -> vision model) + physical mouse/keyboard
+# ---------------------------------------------------------------------------
+
+DEFAULT_VISION_MODEL = os.environ.get("OLLAMA_VISION_MODEL", "ornith-1.5:9b")
+
+# Optional dependency: everything desktop-related degrades gracefully.
+try:
+    import pyautogui as _gui
+
+    _gui.FAILSAFE = True  # slam mouse to the top-left corner to abort
+except ImportError:  # pragma: no cover
+    _gui = None
+
+
+def _desktop_available() -> str | None:
+    if _gui is None:
+        return "pyautogui is not installed — run: pip install pyautogui"
+    return None
+
+
+def _screenshot_path() -> Path:
+    shot_dir = _current_settings.data_dir / "screenshots"
+    shot_dir.mkdir(parents=True, exist_ok=True)
+    return shot_dir / f"screenshot-{datetime.now().strftime('%Y%m%d-%H%M%S')}.png"
+
+
+def _ollama_vision(image_path: Path, prompt: str) -> str:
+    """Ask the vision model about an image via Ollama's native chat API."""
+    b64 = base64.b64encode(image_path.read_bytes()).decode("ascii")
+    payload = json.dumps({
+        "model": DEFAULT_VISION_MODEL,
+        "stream": False,
+        "messages": [
+            {"role": "user", "content": prompt, "images": [b64]}
+        ],
+        "options": {"temperature": 0.1},
+    }).encode("utf-8")
+    req = urllib.request.Request(
+        "http://localhost:11434/api/chat",
+        data=payload,
+        headers={"Content-Type": "application/json"},
+    )
+    with urllib.request.urlopen(req, timeout=300) as resp:
+        data = json.loads(resp.read().decode("utf-8", "replace"))
+    return str(data.get("message", {}).get("content", "")).strip()
+
+
+def screenshot() -> str:
+    """Capture the screen and save it as a PNG file.
+
+    Use this before mouse actions to see what is on screen, and after them
+    to verify what changed.
+
+    Returns:
+        The path of the saved screenshot, or an error message.
+    """
+    err = _desktop_available()
+    if err:
+        return err
+    path = _screenshot_path()
+    img = _gui.screenshot()
+    img.save(path)
+    return f"Screenshot saved to {path} (size {img.size[0]}x{img.size[1]})."
+
+
+def look_at_screen(question: str = "Describe what is currently on the screen.") -> str:
+    """Take a screenshot and let the agent actually SEE it (vision model).
+
+    Use this to read windows, buttons, dialogs, error messages or app state
+    before deciding on mouse/keyboard actions.
+
+    Args:
+        question: What to look for or answer about the screen.
+
+    Returns:
+        The vision model's answer about the screenshot.
+    """
+    err = _desktop_available()
+    if err:
+        return err
+    path = _screenshot_path()
+    _gui.screenshot().save(path)
+    try:
+        answer = _ollama_vision(
+            path, f"{question}\n\nAnswer concisely. Mention window titles, "
+            "visible buttons and anything relevant to the question."
+        )
+    except Exception as exc:
+        return f"Vision failed ({exc}); screenshot saved at {path}."
+    return f"Screenshot: {path}\nVision says: {answer}"
+
+
+def mouse_move(x: int, y: int) -> str:
+    """Move the mouse pointer to screen coordinates (x, y).
+
+    Args:
+        x: Horizontal position in pixels (0 is the left edge).
+        y: Vertical position in pixels (0 is the top edge).
+
+    Returns:
+        Confirmation with the new position.
+    """
+    err = _desktop_available()
+    if err:
+        return err
+    _gui.moveTo(int(x), int(y), duration=0.25)
+    return f"Mouse moved to ({x}, {y})."
+
+
+def mouse_click(x: int, y: int, button: str = "left", clicks: int = 1) -> str:
+    """Move the mouse to (x, y) and click there.
+
+    Args:
+        x: Horizontal position in pixels.
+        y: Vertical position in pixels.
+        button: "left", "right" or "middle".
+        clicks: 1 for a single click, 2 for a double-click.
+
+    Returns:
+        Confirmation of the action.
+    """
+    err = _desktop_available()
+    if err:
+        return err
+    _gui.click(int(x), int(y), clicks=int(clicks), button=button)
+    return f"Clicked {button} button {clicks}x at ({x}, {y})."
+
+
+def mouse_drag(x: int, y: int, duration: float = 0.5) -> str:
+    """Press and hold the left button, drag to (x, y), then release.
+
+    Args:
+        x: Destination horizontal position in pixels.
+        y: Destination vertical position in pixels.
+        duration: Seconds the drag should take.
+
+    Returns:
+        Confirmation of the action.
+    """
+    err = _desktop_available()
+    if err:
+        return err
+    _gui.dragTo(int(x), int(y), duration=max(0.1, float(duration)), button="left")
+    return f"Dragged to ({x}, {y})."
+
+
+def mouse_scroll(amount: int) -> str:
+    """Scroll the mouse wheel.
+
+    Args:
+        amount: Positive scrolls up, negative scrolls down (in wheel clicks).
+
+    Returns:
+        Confirmation of the action.
+    """
+    err = _desktop_available()
+    if err:
+        return err
+    _gui.scroll(int(amount))
+    return f"Scrolled {amount} wheel clicks."
+
+
+def type_text(text: str, interval: float = 0.03) -> str:
+    """Type text into whatever window currently has focus.
+
+    Make sure to click the right input field first (mouse_click + look_at_screen).
+
+    Args:
+        text: The characters to type.
+        interval: Seconds between keystrokes (slower = more reliable).
+
+    Returns:
+        Confirmation of the action.
+    """
+    err = _desktop_available()
+    if err:
+        return err
+    _gui.typewrite(text, interval=max(0.0, float(interval)))
+    return f"Typed {len(text)} characters."
+
+
+def press_key(key: str, presses: int = 1) -> str:
+    """Press a keyboard key, e.g. "enter", "esc", "tab", "ctrl+c", "win".
+
+    Args:
+        key: Key or combo name(s); combos use "+", e.g. "ctrl+s", "win+r".
+        presses: How many times to press it.
+
+    Returns:
+        Confirmation of the action.
+    """
+    err = _desktop_available()
+    if err:
+        return err
+    combo = [k.strip().lower() for k in key.split("+") if k.strip()]
+    for _ in range(max(1, int(presses))):
+        if len(combo) > 1:
+            _gui.hotkey(*combo)
+        else:
+            _gui.press(combo[0])
+    return f"Pressed {'+'.join(combo)} x{presses}."
+
+
 TOOLS: list[Callable[..., str]] = [
     now,
     calculator,
@@ -1003,6 +1211,14 @@ TOOLS: list[Callable[..., str]] = [
     list_skills,
     get_skill,
     save_skill,
+    screenshot,
+    look_at_screen,
+    mouse_move,
+    mouse_click,
+    mouse_drag,
+    mouse_scroll,
+    type_text,
+    press_key,
     remember,
     forget,
     search_notes,
@@ -1043,6 +1259,11 @@ def build_system_prompt(settings: Settings) -> str:
           headless-Chrome/Edge, never DuckDuckGo) for the web;
           remember/search_notes for anything worth keeping long-term.
         - Prefer reading a file before editing it so your edits match reality.
+        - Desktop control: look_at_screen SAVES a screenshot and returns what
+          the vision model sees — use it to find window titles, buttons and
+          coordinates before clicking. mouse_click/type_text/press_key act on
+          whatever window has focus, so always LOOK first, then act. Screenshots
+          are saved under .agent/screenshots/ and can be shown to the user.
         - When a tool errors, adapt and try another approach instead of
           repeating the same call.
         - Never claim you did something (wrote a file, ran a command, searched

@@ -22,17 +22,26 @@ python agent.py --no-history "one-off question"
 
 ## Features
 
-### Tools (17)
+### Tools (25)
 `now` · `calculator` · `web_fetch` · `web_search` · `read_file` · `write_file`
 · `append_file` · `list_directory` · `search_files` · `run_command` ·
 `list_skills` · `get_skill` · `save_skill` · `remember` · `forget` ·
-`search_notes` · `list_notes`
+`search_notes` · `list_notes` · `screenshot` · `look_at_screen` ·
+`mouse_move` · `mouse_click` · `mouse_drag` · `mouse_scroll` · `type_text` ·
+`press_key`
 
 The model picks the tools itself from their schemas. `run_command` executes
 shell commands in the workspace; file tools resolve paths relative to it.
 `remember`/`search_notes` give it a persistent long-term memory
 (`.agent/notes.json`). The calculator is a safe, whitelisted evaluator — no
 code execution.
+
+**Vision + desktop control** (needs `pip install pyautogui`): `look_at_screen`
+sends a screenshot to a vision model (default `ornith-1.5:9b`, override with
+`OLLAMA_VISION_MODEL`) so the agent can literally see windows, buttons and
+dialogs, then act with the mouse/keyboard tools. Screenshots land in
+`.agent/screenshots/`. Mouse control includes a failsafe: slamming the mouse
+into the top-left corner aborts it.
 
 ### Web search — Brave or Chrome (no DuckDuckGo)
 
@@ -123,7 +132,7 @@ interface. Test screenshots are git-ignored (they capture the desktop).
 
 | Flag | Env var | Default |
 |------|---------|---------|
-| `--model` | `OLLAMA_MODEL` | `ornith-1.5:9b` |
+| `--model` | `OLLAMA_MODEL` | `qwen3:4b` |
 | `--base-url` | `OLLAMA_BASE_URL` | `http://localhost:11434/v1` |
 | `--search-backend` | `SEARCH_BACKEND` | `auto` (`auto`/`brave`/`chrome`) |
 | — | `BRAVE_API_KEY` | *(unset — Brave path off)* |
