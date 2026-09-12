@@ -18,6 +18,8 @@ bisect_out.txt
 bisect_err.txt
 vis_out.txt
 vis_err.txt
+nb_out.txt
+nb_err.txt
 
 # OS junk
 Thumbs.db
