@@ -20,6 +20,18 @@ python agent.py --new "hello, call me Ada"
 python agent.py --no-history "one-off question"
 ```
 
+## What you need
+
+- **Python 3.11+** (developed on 3.13)
+- **Ollama** running (`ollama serve` / the desktop app) with:
+  - a **tools-capable chat model**, e.g. `ollama pull qwen3:4b` (the default).
+    Models without the `tools` capability (e.g. `ornith-1.5:9b`) cannot do
+    reliable tool calling — the agent will fail with output-parse retries.
+  - optionally a **vision model** for desktop sight, e.g. `ornith-1.5:9b`
+    (it has `vision`; used by `look_at_screen`)
+- `pip install pydantic-ai bs4`
+- optional: `pip install pyautogui` — desktop vision + mouse/keyboard control
+
 ## Features
 
 ### Tools (25)
@@ -42,6 +54,17 @@ sends a screenshot to a vision model (default `ornith-1.5:9b`, override with
 dialogs, then act with the mouse/keyboard tools. Screenshots land in
 `.agent/screenshots/`. Mouse control includes a failsafe: slamming the mouse
 into the top-left corner aborts it.
+
+The loop *look → act → look again* works end to end (proven in
+`tests/test_vision_notepad.py`, where the agent typed a typo-ridden sentence
+into Notepad, spotted its own typos via vision, and physically fixed them):
+
+```powershell
+python agent.py "Open Notepad, type 'agent test', then look at the screen and tell me exactly what it says."
+```
+
+Expect each `look_at_screen` to take ~30–90 s (vision model inference on a
+1080p screenshot) — and don't touch the mouse/keyboard while the agent drives.
 
 ### Web search — Brave or Chrome (no DuckDuckGo)
 
@@ -95,16 +118,10 @@ python agent.py /new            # same, from inside the REPL
 python agent.py --max-history 20
 ```
 
-### Experiments: GUI automation vs programmatic control (`tests/`)
+### Tests (`tests/`)
 
-Runnable proofs (no pytest — just run them) that simulated keystrokes are a
-last resort next to programmatic control. `test_win_key.py` needs one
-optional dependency:
-
-```powershell
-pip install pyautogui
-python tests\test_win_key.py   # hands off the keyboard for ~8 s!
-```
+Runnable proofs, no pytest — just run them. Desktop tests need
+`pip install pyautogui` and will physically move your mouse/keyboard.
 
 | Script | What it demonstrates |
 |---|---|
@@ -112,14 +129,19 @@ python tests\test_win_key.py   # hands off the keyboard for ~8 s!
 | `compare_prog.py` | Same job via the file API + `Start-Process`: ~95 ms vs 9.6 s, verified window title. |
 | `verify_followup.py` | Confirms no stray text leaked to disk or Notepad's session cache; retry-loop title check. |
 | `diag2.py` | Window-ownership forensics + Notepad `TabState` cache inspection. |
+| `test_chrome_search.py` | The agent's real chrome search path (no LLM): headless Google→Bing, live results in ~8 s. |
+| `test_open_apps.py` | Opens Word (programmatic) and Brave (Win-key with programmatic fallback); verifies window titles. |
+| `test_vision.py` | `look_at_screen`: screenshot → vision model describes the screen. |
+| `test_vision_notepad.py` | Full computer-use loop: physically type a typo-ridden line in Notepad → vision reads it → vision proposes the fix → physically applied → vision verifies. |
 
-Measured on Windows 11: the GUI path took **9.6 s** vs **~0.1 s** programmatic,
-and Notepad silently reopened the previous session's tabs — the typed text
-landed in an *unrelated restored document*. Lesson: prefer API/CLI/COM/UIA;
-reserve `pyautogui`-style keystroke automation for apps that offer no other
-interface. Test screenshots are git-ignored (they capture the desktop).
-
-## REPL commands
+Measured lessons (Windows 11): the GUI path took **9.6 s** vs **~0.1 s**
+programmatic; Win11 Notepad silently reopens the previous session's tabs (the
+Win+R path types into a *restored* document unless you make a new tab first);
+the Run dialog pre-fills its last command (select-all before typing); and
+models without Ollama's `tools` capability fail agent tool-calls with
+output-parse retries. Prefer API/CLI/COM/UIA; reserve keystroke automation for
+apps that offer no other interface. Test screenshots are git-ignored (they
+capture the desktop).
 
 ## REPL commands
 
@@ -135,6 +157,7 @@ interface. Test screenshots are git-ignored (they capture the desktop).
 | `--model` | `OLLAMA_MODEL` | `qwen3:4b` |
 | `--base-url` | `OLLAMA_BASE_URL` | `http://localhost:11434/v1` |
 | `--search-backend` | `SEARCH_BACKEND` | `auto` (`auto`/`brave`/`chrome`) |
+| — | `OLLAMA_VISION_MODEL` | `ornith-1.5:9b` (used by `look_at_screen`) |
 | — | `BRAVE_API_KEY` | *(unset — Brave path off)* |
 | — | `CHROME_PATH` | *(auto-detected)* |
 | `--workspace` | — | this folder |
