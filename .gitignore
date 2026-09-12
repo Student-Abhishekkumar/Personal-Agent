@@ -1,0 +1,14 @@
+# Python
+__pycache__/
+*.pyc
+
+# Private local data — conversation history & long-term notes
+.agent/
+
+# Test artifacts (screenshots capture the whole desktop — never commit)
+win_key_test.png
+prog_test.txt
+
+# OS junk
+Thumbs.db
+desktop.ini
