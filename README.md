@@ -22,25 +22,52 @@ python agent.py --no-history "one-off question"
 
 ## What you need
 
-- **Python 3.11+** (developed on 3.13)
-- **Ollama** running (`ollama serve` / the desktop app) with:
-  - a **tools-capable chat model**, e.g. `ollama pull qwen3:4b` (the default).
-    Models without the `tools` capability (e.g. `ornith-1.5:9b`) cannot do
-    reliable tool calling — the agent will fail with output-parse retries.
-  - optionally a **vision model** for desktop sight, e.g. `ornith-1.5:9b`
-    (it has `vision`; used by `look_at_screen`)
-- `pip install pydantic-ai bs4`
-- optional: `pip install pyautogui` — desktop vision + mouse/keyboard control
+- **Python 3.11+** (developed on 3.13) and **Ollama** (<https://ollama.com>)
+- Windows (voice + desktop control are Windows features; the rest works anywhere)
+
+## One-command setup (Windows)
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\setup.ps1
+```
+
+That installs the Python packages (`requirements.txt`), pulls both Ollama
+models, and checks the server. Then:
+
+| How | Command |
+|---|---|
+| Text chat | `python agent.py` |
+| One question | `python agent.py "what files are in this project?"` |
+| **Voice (Jarvis mode)** | `python agent.py --voice` — or double-click **`START.bat`** |
+
+Manual install, if you prefer: `pip install -r requirements.txt`,
+`ollama pull qwen3:4b` (chat + tools), `ollama pull ornith-1.5:9b` (vision).
+Note: the chat model must support Ollama's `tools` capability — models
+without it (e.g. `ornith-1.5:9b`) cannot do reliable tool calling.
+
+### Voice mode — speak to it, it speaks back
+
+```powershell
+python agent.py --voice
+```
+
+The agent listens on your microphone (Google's free web speech API — needs
+internet), thinks, uses its tools, then **says the answer aloud** through the
+Windows built-in voice. It addresses you as *sir* and reports task status out
+loud ("Done, sir." / "That failed, sir — …"). Say **goodbye** to quit.
+
+Optional extra voices/languages for TTS: Windows Settings → Time & Language →
+Speech. Voice mode also works one-shot: `python agent.py --voice "what's the time?"`
 
 ## Features
 
-### Tools (25)
+### Tools (26)
 `now` · `calculator` · `web_fetch` · `web_search` · `read_file` · `write_file`
 · `append_file` · `list_directory` · `search_files` · `run_command` ·
 `list_skills` · `get_skill` · `save_skill` · `remember` · `forget` ·
 `search_notes` · `list_notes` · `screenshot` · `look_at_screen` ·
 `mouse_move` · `mouse_click` · `mouse_drag` · `mouse_scroll` · `type_text` ·
-`press_key`
+`press_key` · `speak`
 
 The model picks the tools itself from their schemas. `run_command` executes
 shell commands in the workspace; file tools resolve paths relative to it.

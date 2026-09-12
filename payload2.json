@@ -1,0 +1,1 @@
+{"model":"qwen3:4b","stream":false,"think":false,"messages":[{"role":"user","content":"what is 12+30"},{"role":"tool","content":"42"}],"tools":[{"type":"function","function":{"name":"calc","description":"calculate","parameters":{"type":"object","properties":{"expression":{"type":"string"}},"required":["expression"]}}}]}

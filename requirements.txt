@@ -1,0 +1,6 @@
+pydantic-ai
+bs4
+pyautogui
+SpeechRecognition
+pyaudio
+pyttsx3

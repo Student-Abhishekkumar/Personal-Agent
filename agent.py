@@ -1197,6 +1197,65 @@ def press_key(key: str, presses: int = 1) -> str:
     return f"Pressed {'+'.join(combo)} x{presses}."
 
 
+_TTS_ENGINE: Any = None
+
+
+def _get_tts() -> Any:
+    global _TTS_ENGINE
+    if _TTS_ENGINE is None:
+        import pyttsx3
+
+        _TTS_ENGINE = pyttsx3.init()
+        _TTS_ENGINE.setProperty("rate", 185)   # brisk, Jarvis-like
+        _TTS_ENGINE.setProperty("volume", 1.0)  # full volume
+        # Voice selection: OLLAMA_TTS_VOICE matches part of a voice name.
+        # Installed by default: David (US male), Hazel (UK female), Zira (US female).
+        wanted = os.environ.get("OLLAMA_TTS_VOICE", "David").lower()
+        for v in _TTS_ENGINE.getProperty("voices"):
+            if wanted and wanted in v.name.lower():
+                _TTS_ENGINE.setProperty("voice", v.id)
+                break
+    return _TTS_ENGINE
+
+
+def speak(text: str) -> str:
+    """Speak text aloud through the speakers (Windows built-in voice).
+
+    Use this to confirm to the user, out loud, what you did or what went
+    wrong — e.g. after finishing desktop tasks.
+
+    Args:
+        text: What to say (plain text, kept reasonably short).
+
+    Returns:
+        Confirmation of the action.
+    """
+    if sys.platform != "win32":
+        return "speak() is only supported on Windows."
+    try:
+        engine = _get_tts()
+        engine.say(text)
+        engine.runAndWait()
+        return f"Spoke {len(text)} characters aloud."
+    except Exception as exc:
+        # Fallback: Windows SAPI via PowerShell (separate process).
+        safe = text.replace("'", "''").replace('"', "")
+        script = (
+            "Add-Type -AssemblyName System.Speech; "
+            "$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
+            f"$s.Speak('{safe}')"
+        )
+        try:
+            subprocess.run(
+                ["powershell", "-NoProfile", "-Command", script],
+                capture_output=True, timeout=120,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            return f"Spoke via SAPI fallback ({exc})."
+        except Exception as exc2:
+            return f"Could not speak: {exc2}"
+
+
 TOOLS: list[Callable[..., str]] = [
     now,
     calculator,
@@ -1219,6 +1278,7 @@ TOOLS: list[Callable[..., str]] = [
     mouse_scroll,
     type_text,
     press_key,
+    speak,
     remember,
     forget,
     search_notes,
@@ -1238,9 +1298,14 @@ def build_system_prompt(settings: Settings) -> str:
     return textwrap.dedent(
         f"""
         You are {AGENT_NAME}, a capable personal AI assistant running fully
-        locally. You help with coding, writing, research, system tasks and
-        everyday questions — using your tools whenever they would make your
-        answer better or more accurate.
+        locally — in the spirit of Jarvis from Iron Man: calm, competent,
+        quietly witty. You help with coding, writing, research, system tasks
+        and everyday questions — using your tools whenever they would make
+        your answer better or more accurate.
+        You address the user as "sir" (naturally, not in every sentence).
+        After completing a task, say plainly whether it succeeded or failed —
+        e.g. "Done, sir." / "I'm afraid that failed, sir — <reason>." — and
+        keep it to one short closing line.
 
         ## Facts about this machine
         - Current date & time (local): {now_str}
@@ -1280,6 +1345,9 @@ def build_system_prompt(settings: Settings) -> str:
           lists. Show code with brief explanations, not essays.
         - If the request is ambiguous, state your assumption and proceed.
         - Lead with the answer, then support it.
+        - Your replies are sometimes read aloud by text-to-speech, so keep
+          sentences spoken-friendly: no markdown symbols, no giant lists
+          when a sentence will do.
         """
     ).strip()
 
@@ -1442,6 +1510,70 @@ def repl(agent: Agent, settings: Settings, history: list[ModelMessage]) -> int:
             run_turn(agent, settings, line, history)
     print("bye.")
     return 0
+# ---------------------------------------------------------------------------
+# Voice mode — listen (speech-to-text), think, act, then speak the answer
+# ---------------------------------------------------------------------------
+
+_WAKE_WORDS = {"jarvis", "hey jarvis", "agent"}
+
+
+def _speech_text(text: str) -> str:
+    """Strip markdown-ish symbols so TTS sounds natural."""
+    return re.sub(r"[*_`#>|]", "", text)
+
+
+def _listen_once(recognizer: Any, microphone: Any) -> Optional[str]:
+    with microphone as source:
+        recognizer.adjust_for_ambient_noise(source, duration=0.4)
+        print("listening… (speak now)", flush=True)
+        try:
+            audio = recognizer.listen(source, timeout=8, phrase_time_limit=30)
+        except Exception:
+            return None
+    try:
+        return recognizer.recognize_google(audio).strip()
+    except Exception:
+        return None
+
+
+def voice_repl(agent: Agent, settings: Settings, history: list[ModelMessage]) -> int:
+    """Hands-free loop: speak a request, the agent answers aloud."""
+    try:
+        import speech_recognition as sr
+    except ImportError:
+        print("Voice input needs two packages:\n"
+              "    pip install SpeechRecognition pyaudio\n"
+              "(then run: python agent.py --voice)")
+        return 1
+    recognizer = sr.Recognizer()
+    try:
+        microphone = sr.Microphone()
+    except Exception as exc:
+        print(f"[error] microphone unavailable: {exc}")
+        return 1
+
+    print(
+        f"\n{AGENT_NAME} (voice) — model: {settings.model}\n"
+        "Speak your request. Say 'goodbye' to quit.\n"
+    )
+    speak("Online and listening, sir.")
+    while True:
+        heard = _listen_once(recognizer, microphone)
+        if not heard:
+            print("(didn't catch that — try again)")
+            continue
+        print(f"you (voice)> {heard}")
+        if heard.lower().strip(" .!") in {"goodbye", "good bye", "exit", "quit", "stop"}:
+            speak("Goodbye, sir.")
+            break
+        answer = run_turn(agent, settings, heard, history)
+        if answer:
+            speak(_speech_text(answer))
+        else:
+            speak("I'm afraid something went wrong there, sir.")
+    return 0
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     global _current_settings
 
@@ -1478,6 +1610,9 @@ def main(argv: Optional[list[str]] = None) -> int:
                         help="print available skills and exit")
     parser.add_argument("--print-system-prompt", action="store_true",
                         help="print the generated system prompt and exit")
+    parser.add_argument("--voice", action="store_true",
+                        help="hands-free mode: listen via microphone, answer aloud "
+                             "(needs: pip install SpeechRecognition pyaudio)")
     args = parser.parse_args(argv)
 
     settings = Settings(
@@ -1519,8 +1654,13 @@ def main(argv: Optional[list[str]] = None) -> int:
     if args.prompt:
         if history:
             print(f"(resuming conversation from {settings.history_file.name} — {len(history)} messages)")
-        run_turn(agent, settings, args.prompt, history)
+        output = run_turn(agent, settings, args.prompt, history)
+        if args.voice and output:
+            speak(_speech_text(output))
         return 0
+
+    if args.voice:
+        return voice_repl(agent, settings, history)
 
     if history:
         print(f"(resuming conversation — {len(history)} messages in context)")
