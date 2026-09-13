@@ -1305,6 +1305,91 @@ def close_app(name: str) -> str:
     return out or f"Could not close {name!r} (no output)."
 
 
+# ---------------------------------------------------------------------------
+# Visible browser tools — search the web on Chrome like a human would
+# ---------------------------------------------------------------------------
+
+_BROWSER_PATHS = [
+    os.path.expandvars(p)
+    for p in (
+        r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe",
+        r"%ProgramFiles%\Google\Chrome\Application\chrome.exe",
+        r"%ProgramFiles(x86)%\Google\Chrome\Application\chrome.exe",
+        r"%LOCALAPPDATA%\BraveSoftware\Brave-Browser\Application\brave.exe",
+        r"%ProgramFiles%\BraveSoftware\Brave-Browser\Application\brave.exe",
+        r"%ProgramFiles%\Microsoft\Edge\Application\msedge.exe",
+    )
+]
+
+
+def _visible_browser() -> str:
+    """Resolve the best visible browser exe (PowerShell snippet)."""
+    return (
+        "$p = $null; "
+        + "".join(
+            f"if (-not $p) {{ $c = '{path}'; if (Test-Path $c) {{ $p = $c }} }} "
+            for path in _BROWSER_PATHS
+        )
+        + "if ($p) { $p } else { '' }"
+    )
+
+
+def _open_in_browser(target_url: str) -> str:
+    """Launch the visible browser on target_url, detached; verify it started."""
+    query = (
+        f"$b = $({_visible_browser()}); "
+        "if ($b) { "
+        f"  $proc = Start-Process $b -ArgumentList '{target_url}' -PassThru; "
+        "  Start-Sleep -Seconds 2; "
+        "  $alive = Get-Process -Id $proc.Id -ErrorAction SilentlyContinue; "
+        "  if ($alive) { 'OPENED in browser: ' + $b + ' (pid ' + $proc.Id + ')' } "
+        "  else { 'STARTED (pid ' + $proc.Id + ')' } "
+        "} else { 'NOBROWSER: no Chrome/Brave/Edge found' }"
+    )
+    try:
+        out = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", query],
+            capture_output=True, text=True, timeout=30,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        ).stdout.strip()
+    except Exception as exc:
+        return f"Could not open browser: {exc}"
+    return out or "Could not open browser (no output)."
+
+
+def chrome_search(query: str) -> str:
+    """Open Chrome (or Brave/Edge) VISIBLY on a Google search for the query.
+
+    Use this when the user wants to SEE the search in their browser, or to
+    browse results interactively. For silent data extraction use web_search.
+
+    Args:
+        query: What to search for, e.g. "best python http library 2026".
+
+    Returns:
+        Confirmation that the browser opened with the search.
+    """
+    q = urllib.parse.quote_plus(query)
+    result = _open_in_browser(f"https://www.google.com/search?q={q}")
+    return f"Search opened in your browser. {result}"
+
+
+def open_url(url: str) -> str:
+    """Open a website in the visible browser (Chrome/Brave/Edge).
+
+    Args:
+        url: Full URL or domain, e.g. "https://github.com" or "github.com".
+
+    Returns:
+        Confirmation that the browser opened the site.
+    """
+    url = url.strip()
+    if not url.startswith(("http://", "https://")):
+        url = "https://" + url
+    result = _open_in_browser(url)
+    return f"Opened {url} in your browser. {result}"
+
+
 def speak(text: str) -> str:
     """Speak text aloud through the speakers (Windows built-in voice).
 
@@ -1368,6 +1453,8 @@ TOOLS: list[Callable[..., str]] = [
     speak,
     open_app,
     close_app,
+    chrome_search,
+    open_url,
     remember,
     forget,
     search_notes,
@@ -1425,6 +1512,10 @@ def build_system_prompt(settings: Settings) -> str:
         - To OPEN an application (notepad, word, chrome, brave, calculator...),
           always use the open_app tool — never run_command, whose timeout can
           kill the launched app and then reports a false success.
+        - Two ways to search the web: web_search = silent, returns data to you;
+          chrome_search = opens the browser VISIBLY with Google results (use
+          when the user wants to see it, e.g. "search on chrome for ...").
+          open_url opens any specific website in the browser.
         - When a tool errors, adapt and try another approach instead of
           repeating the same call.
         - Never claim you did something (wrote a file, ran a command, searched
@@ -1455,6 +1546,8 @@ FAST_TOOLS: list[Callable[..., str]] = [
     calculator,
     web_search,
     web_fetch,
+    chrome_search,
+    open_url,
     screenshot,
     look_at_screen,
     open_app,
