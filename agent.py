@@ -60,11 +60,11 @@ from pydantic_ai.usage import UsageLimits
 
 AGENT_NAME = "Personal Agent"
 
-# Models used as the default MUST advertise the "tools" capability in Ollama
-# (`ollama show <model>`); ornith-1.5:9b does not, and without native tool
-# calling the model fakes tool calls in plain text, which fails output
-# parsing ("Exceeded maximum output retries").
-DEFAULT_MODEL = os.environ.get("OLLAMA_MODEL", "qwen3:4b")
+# Default chat model (user preference: ornith-1.5:9b). NOTE: ornith does not
+# advertise Ollama's "tools" capability, so complex tool-calling can fail with
+# output-parse retries; qwen3:4b (--model qwen3:4b) is the tools-capable
+# alternative and is also faster on tool-heavy turns.
+DEFAULT_MODEL = os.environ.get("OLLAMA_MODEL", "ornith-1.5:9b")
 DEFAULT_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434/v1")
 
 PROJECT_DIR = Path(__file__).resolve().parent
@@ -88,6 +88,7 @@ class Settings:
     max_history: int = 40
     persist: bool = True
     search_backend: str = "auto"  # "auto" | "brave" | "chrome"
+    fast: bool = False  # voice mode: essential tools only -> much faster turns
 
     @property
     def history_file(self) -> Path:
@@ -1218,6 +1219,92 @@ def _get_tts() -> Any:
     return _TTS_ENGINE
 
 
+def open_app(name: str) -> str:
+    """Launch a Windows application by name and verify its window appeared.
+
+    Use this (not run_command) to open GUI apps — e.g. "notepad", "word",
+    "chrome", "brave", "calc", "mspaint", "explorer". The app is started
+    detached, so it stays open independently of this agent.
+
+    Args:
+        name: App name, e.g. "notepad", "winword", "chrome", "brave", "calc".
+
+    Returns:
+        Confirmation with the app's window title, or an error message.
+    """
+    aliases = {
+        "word": "winword", "ms word": "winword", "office": "winword",
+        "calculator": "calc", "file explorer": "explorer", "files": "explorer",
+        "paint": "mspaint", "edge": "msedge", "google chrome": "chrome",
+    }
+    app = aliases.get(name.strip().lower(), name.strip())
+    query = (
+        "$paths = @("
+        "\"$env:LOCALAPPDATA\\BraveSoftware\\Brave-Browser\\Application\\brave.exe\","
+        "\"$env:ProgramFiles\\Google\\Chrome\\Application\\chrome.exe\","
+        "\"$env:ProgramFiles\\Microsoft\\Edge\\Application\\msedge.exe\" ); "
+        f"$p = Get-Command '{app}' -ErrorAction SilentlyContinue; "
+        "if (-not $p) { foreach ($f in $paths) { if (Test-Path $f) { $p = $f; break } } } "
+        f"if (-not $p) {{ $ap = Get-ItemProperty 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths\\*' -ErrorAction SilentlyContinue | "
+        f"Where-Object {{ $_.PSChildName -like '{app}*' }} | Select-Object -First 1; "
+        f"if ($ap) {{ $p = $ap.'(default)' }} }} "
+        f"if ($p) {{ $proc = Start-Process $p -PassThru; Start-Sleep -Seconds 3; "
+        f"$w = Get-Process -Id $proc.Id -ErrorAction SilentlyContinue; "
+        f"if ($w -and $w.MainWindowTitle) {{ 'OPENED pid=' + $proc.Id + ' title=[' + $w.MainWindowTitle + ']' }} "
+        f"else {{ 'STARTED pid=' + $proc.Id + ' (window title not set yet)' }} }} "
+        f"else {{ 'NOTFOUND: no app matching {app}' }}"
+    )
+    try:
+        out = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", query],
+            capture_output=True, text=True, timeout=30,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        ).stdout.strip()
+    except Exception as exc:
+        return f"Could not launch {name!r}: {exc}"
+    return out or f"Could not launch {name!r} (no output)."
+
+
+def close_app(name: str) -> str:
+    """Close an application's windows by name (graceful, then force).
+
+    Args:
+        name: Process name, e.g. "notepad", "chrome", "winword" (no .exe).
+
+    Returns:
+        What was closed, or that nothing was running.
+    """
+    app = name.strip().lower().removesuffix(".exe")
+    query = (
+        f"$procs = Get-Process -Name '{app}' -ErrorAction SilentlyContinue | "
+        "Where-Object { $_.MainWindowHandle -ne 0 }; "
+        "if (-not $procs) { "
+        f"  $any = Get-Process -Name '{app}' -ErrorAction SilentlyContinue; "
+        "  if ($any) { 'BACKGROUND-ONLY: no visible window (all closed?)' } "
+        "  else { 'NOTRUNNING: no process named " + app + "' } "
+        "} else { "
+        "  $procs | ForEach-Object { $_.CloseMainWindow() | Out-Null }; "
+        "  Start-Sleep -Seconds 2; "
+        f"  $left = Get-Process -Name '{app}' -ErrorAction SilentlyContinue; "
+        "  if ($left) { "
+        f"    $left | Stop-Process -Force; "
+        f"    'FORCE-CLOSED: ' + (@($left).Count) + ' window(s) of " + app + "' "
+        "  } else { "
+        f"    'CLOSED: ' + (@($procs).Count) + ' window(s) of " + app + " gracefully' "
+        "  } "
+        "}"
+    )
+    try:
+        out = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", query],
+            capture_output=True, text=True, timeout=30,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        ).stdout.strip()
+    except Exception as exc:
+        return f"Could not close {name!r}: {exc}"
+    return out or f"Could not close {name!r} (no output)."
+
+
 def speak(text: str) -> str:
     """Speak text aloud through the speakers (Windows built-in voice).
 
@@ -1279,6 +1366,8 @@ TOOLS: list[Callable[..., str]] = [
     type_text,
     press_key,
     speak,
+    open_app,
+    close_app,
     remember,
     forget,
     search_notes,
@@ -1294,7 +1383,11 @@ TOOLS: list[Callable[..., str]] = [
 def build_system_prompt(settings: Settings) -> str:
     """Compose the agent's system prompt (identity, skills and guidance)."""
     catalog = SkillManager(settings.skills_dir).catalog_prompt()
-    now_str = datetime.now().astimezone().isoformat(timespec="seconds")
+    # The timestamp must NOT be in the system prompt for fast/voice mode: a
+    # changing byte anywhere invalidates Ollama's prompt cache, forcing a full
+    # re-evaluation of ~8k tokens per request (minutes!). The `now` tool
+    # answers time questions anyway.
+    now_str = "" if settings.fast else datetime.now().astimezone().isoformat(timespec="seconds")
     return textwrap.dedent(
         f"""
         You are {AGENT_NAME}, a capable personal AI assistant running fully
@@ -1308,7 +1401,7 @@ def build_system_prompt(settings: Settings) -> str:
         keep it to one short closing line.
 
         ## Facts about this machine
-        - Current date & time (local): {now_str}
+        {f"- Current date & time (local): {now_str}" if now_str else "- For the current date/time, call the `now` tool."}
         - Working directory: {settings.workspace}
         - Your training data has a cutoff in the past. Whenever "now", "today",
           the date, or live/up-to-date data matters, call the `now` and/or web
@@ -1329,6 +1422,9 @@ def build_system_prompt(settings: Settings) -> str:
           coordinates before clicking. mouse_click/type_text/press_key act on
           whatever window has focus, so always LOOK first, then act. Screenshots
           are saved under .agent/screenshots/ and can be shown to the user.
+        - To OPEN an application (notepad, word, chrome, brave, calculator...),
+          always use the open_app tool — never run_command, whose timeout can
+          kill the launched app and then reports a false success.
         - When a tool errors, adapt and try another approach instead of
           repeating the same call.
         - Never claim you did something (wrote a file, ran a command, searched
@@ -1352,6 +1448,25 @@ def build_system_prompt(settings: Settings) -> str:
     ).strip()
 
 
+# Tool subset for --fast (voice) mode: every schema trimmed is thinking time
+# saved on a local model — ~28 schemas cost ~2 min per turn on a laptop GPU.
+FAST_TOOLS: list[Callable[..., str]] = [
+    now,
+    calculator,
+    web_search,
+    web_fetch,
+    screenshot,
+    look_at_screen,
+    open_app,
+    close_app,
+    mouse_click,
+    type_text,
+    press_key,
+    speak,
+    remember,
+]
+
+
 def build_agent(settings: Settings) -> Agent:
     """Construct a pydantic-ai Agent wired to Ollama with all tools."""
     model = OllamaModel(
@@ -1366,7 +1481,7 @@ def build_agent(settings: Settings) -> Agent:
         model,
         name=AGENT_NAME,
         system_prompt=build_system_prompt(settings),
-        tools=TOOLS,
+        tools=FAST_TOOLS if settings.fast else TOOLS,
         # Local quantized models occasionally emit an unparseable turn after a
         # tool result — allow several regenerations instead of failing fast.
         retries={"tools": 2, "output": 4},
@@ -1410,6 +1525,20 @@ def run_turn(
         return None
     elapsed = time.monotonic() - start
     output = (result.output or "").strip()
+
+    # Show which tools the agent physically used this turn (desktop actions
+    # must be auditable — a false "done" is worse than an error).
+    for msg in result.all_messages()[len(history):]:
+        try:
+            for part in getattr(msg, "parts", []):
+                kind = getattr(part, "part_kind", "")
+                if kind == "tool-call":
+                    print(f"  [tool] {part.tool_name}({part.args})")
+                elif kind == "tool-return":
+                    ret = str(part.content).replace("\n", " ")[:160]
+                    print(f"  [->] {ret}")
+        except Exception:
+            pass
 
     if output:
         print(f"\n{output}")
@@ -1566,6 +1695,8 @@ def voice_repl(agent: Agent, settings: Settings, history: list[ModelMessage]) ->
         if heard.lower().strip(" .!") in {"goodbye", "good bye", "exit", "quit", "stop"}:
             speak("Goodbye, sir.")
             break
+        # Ack immediately — the model can take minutes, silence feels broken.
+        speak("Right away, sir.")
         answer = run_turn(agent, settings, heard, history)
         if answer:
             speak(_speech_text(answer))
@@ -1613,6 +1744,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--voice", action="store_true",
                         help="hands-free mode: listen via microphone, answer aloud "
                              "(needs: pip install SpeechRecognition pyaudio)")
+    parser.add_argument("--fast", action="store_true",
+                        help="essential tools only — much faster turns (implied by --voice)")
     args = parser.parse_args(argv)
 
     settings = Settings(
@@ -1625,6 +1758,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         max_history=args.max_history,
         persist=not args.no_history,
         search_backend=args.search_backend,
+        fast=args.fast or args.voice,
     )
     _current_settings = settings
 

@@ -181,7 +181,7 @@ capture the desktop).
 
 | Flag | Env var | Default |
 |------|---------|---------|
-| `--model` | `OLLAMA_MODEL` | `qwen3:4b` |
+| `--model` | `OLLAMA_MODEL` | `ornith-1.5:9b` |
 | `--base-url` | `OLLAMA_BASE_URL` | `http://localhost:11434/v1` |
 | `--search-backend` | `SEARCH_BACKEND` | `auto` (`auto`/`brave`/`chrome`) |
 | — | `OLLAMA_VISION_MODEL` | `ornith-1.5:9b` (used by `look_at_screen`) |
