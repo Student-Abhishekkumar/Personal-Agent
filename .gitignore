@@ -12,8 +12,9 @@ prog_test.txt
 # Transient test-run output captures
 e2e_out.txt
 e2e_err.txt
-min_out*.txt
-min_err*.txt
+*_out.txt
+*_err.txt
+payload*.json
 bisect_out.txt
 bisect_err.txt
 vis_out.txt

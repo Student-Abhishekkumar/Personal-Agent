@@ -1,0 +1,9 @@
+# Cline rules for this workspace
+
+## Before every push
+- NEVER push unrelated files. Before `git add`/`git push`, always review
+  `git status --short` and `git ls-files` and remove stray artifacts:
+  test-output captures (*_out.txt, *_err.txt), payload dumps, screenshots,
+  temp scripts, __pycache__, private data (.agent/).
+- Keep only: agent.py, README.md, requirements.txt, setup.ps1, START.bat,
+  .gitignore, .clinerules, skills/, tests/ (intentional test scripts only).
