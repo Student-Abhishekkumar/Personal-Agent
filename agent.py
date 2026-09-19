@@ -1362,7 +1362,7 @@ def open_app(name: str) -> str:
         f"if (-not $p) {{ $ap = Get-ItemProperty 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths\\*' -ErrorAction SilentlyContinue | "
         f"Where-Object {{ $_.PSChildName -like '{app}*' }} | Select-Object -First 1; "
         f"if ($ap) {{ $p = $ap.'(default)' }} }} "
-        f"if ($p) {{ $proc = Start-Process $p -PassThru; Start-Sleep -Seconds 3; "
+        f"if ($p) {{ $proc = Start-Process $p -PassThru; Start-Sleep -Seconds 1.5; "
         f"$w = Get-Process -Id $proc.Id -ErrorAction SilentlyContinue; "
         f"if ($w -and $w.MainWindowTitle) {{ 'OPENED pid=' + $proc.Id + ' title=[' + $w.MainWindowTitle + ']' }} "
         f"else {{ 'STARTED pid=' + $proc.Id + ' (window title not set yet)' }} }} "
@@ -1664,6 +1664,12 @@ def build_system_prompt(settings: Settings) -> str:
 
 # Tool subset for --fast (voice) mode: every schema trimmed is thinking time
 # saved on a local model — ~28 schemas cost ~2 min per turn on a laptop GPU.
+# Voice mode also uses a SMALL, fast brain (qwen3:1.7b): a 9B model spends
+# 10-15s just thinking per turn; the 1.7B answers in ~2-4s. Override with
+# OLLAMA_FAST_MODEL. The full-capability brain (settings.model) remains the
+# default outside voice mode.
+FAST_MODEL = os.environ.get("OLLAMA_FAST_MODEL", "qwen3:1.7b")
+
 FAST_TOOLS: list[Callable[..., str]] = [
     now,
     calculator,
@@ -1685,8 +1691,9 @@ FAST_TOOLS: list[Callable[..., str]] = [
 
 def build_agent(settings: Settings) -> Agent:
     """Construct a pydantic-ai Agent wired to Ollama with all tools."""
+    model_name = FAST_MODEL if settings.fast else settings.model
     model = OllamaModel(
-        settings.model,
+        model_name,
         provider=OllamaProvider(base_url=settings.base_url),
         # Disable the model's verbose "thinking" mode: on local quantized
         # models it tends to ramble after tool results and can produce
@@ -1881,6 +1888,44 @@ def _listen_once(recognizer: Any, microphone: Any) -> Optional[str]:
         return None
 
 
+def _reflex_command(heard: str) -> Optional[str]:
+    """Instant commands — no LLM round-trip. Returns the spoken answer, or
+    None if the request needs the model."""
+    h = heard.lower().strip()
+
+    if re.search(r"\b(what('s| is) your name|who are you)\b", h):
+        return f"I am Buddy, sir — your personal AI assistant."
+
+    if re.search(r"\b(what('s| is) the time|current time|what time is it)\b", h):
+        return f"It is {datetime.now().strftime('%I:%M %p')}."
+
+    if re.search(r"\b(what('s| is) (the |today's )?date|what day is it)\b", h):
+        return f"Today is {datetime.now().strftime('%A, %d %B %Y')}."
+
+    if re.search(r"\b(take a )?(screen ?shot)\b", h):
+        return screenshot()
+
+    if re.search(r"\b(look at the screen|what do you see)\b", h):
+        return look_at_screen()
+
+    m = re.match(r"^(?:buddy,? )?(?:please )?open (.+?)\s*(?:for me)?[.!]?$", h)
+    if m:
+        return open_app(m.group(1).strip())
+
+    m = re.match(r"^(?:buddy,? )?(?:please )?close (.+?)\s*(?:for me)?[.!]?$", h)
+    if m:
+        return close_app(m.group(1).strip())
+
+    m = re.match(
+        r"^(?:buddy,? )?(?:please )?(?:search|google)(?: on | in )?(?:chrome|brave|edge)?(?: for)? (.+?)[.!]?$",
+        h,
+    )
+    if m and m.group(1):
+        return chrome_search(m.group(1))
+
+    return None
+
+
 def voice_repl(agent: Agent, settings: Settings, history: list[ModelMessage]) -> int:
     """Hands-free loop: speak a request, the agent answers aloud."""
     try:
@@ -1898,7 +1943,7 @@ def voice_repl(agent: Agent, settings: Settings, history: list[ModelMessage]) ->
         return 1
 
     print(
-        f"\n{AGENT_NAME} (voice) — model: {settings.model}\n"
+        f"\n{AGENT_NAME} (voice) — brain: {FAST_MODEL if settings.fast else settings.model}\n"
         "Speak your request. Say 'goodbye' to quit.\n"
     )
     speak("Online and listening, sir.")
@@ -1912,6 +1957,11 @@ def voice_repl(agent: Agent, settings: Settings, history: list[ModelMessage]) ->
             speak("Goodbye, sir.")
             break
         # Ack immediately — the model can take minutes, silence feels broken.
+        reflex = _reflex_command(heard)
+        if reflex is not None:
+            print(f"  [reflex] instant command, no LLM needed")
+            speak(_speech_text(reflex))
+            continue
         speak("Right away, sir.")
         answer = run_turn(agent, settings, heard, history)
         if answer:

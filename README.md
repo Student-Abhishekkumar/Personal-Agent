@@ -57,11 +57,19 @@ addresses you as *sir* and reports task status out loud ("Done, sir." /
 "That failed, sir — …"). Say **goodbye** to quit.
 
 **Voice engine:** Kokoro-82M (Apache-2.0, fully offline, natural neural
-voice) — runs on CPU at ~2× realtime, and automatically on your GPU
-(DirectML) when the graphics driver supports it. Voice is set with
-`OLLAMA_TTS_VOICE` (default `am_michael`, US male; try `af_heart`, `bm_george`,
-`af_bella`). Falls back to pyttsx3/SAPI if the model is missing. One-shot
-voice mode also works: `python agent.py --voice "what's the time?"`
+voice) — **phrase-streamed, ~0.4 s to first sound**; runs on CPU at ~2×
+realtime, and automatically on your GPU (DirectML) when the graphics driver
+supports it. Voice is set with `OLLAMA_TTS_VOICE` (default `am_michael`, US
+male; try `af_heart`, `bm_george`, `af_bella`). Falls back to pyttsx3/SAPI if
+the model is missing. One-shot voice mode also works:
+`python agent.py --voice "what's the time?"`
+
+**Speed:** voice mode runs a small fast brain (`qwen3:1.7b`, override with
+`OLLAMA_FAST_MODEL`) plus a **reflex layer** — common commands ("open X",
+"close X", "what time is it", "who are you", "take a screenshot", "search on
+chrome for …") skip the LLM entirely and respond instantly. Complex requests
+still go to the model (~5–8 s warm). Tip: set the Ollama server env
+`OLLAMA_KEEP_ALIVE=-1` so the model never unloads between sessions.
 
 ## Features
 
