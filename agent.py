@@ -1209,7 +1209,13 @@ _TTS_DIR = PROJECT_DIR / ".agent" / "tts"
 
 
 def _get_kokoro() -> Any:
-    """Load the Kokoro ONNX TTS engine (GPU DirectML first, CPU fallback)."""
+    """Load the Kokoro ONNX TTS engine (GPU DirectML first, CPU fallback).
+
+    The GPU attempt runs at most once per machine: if the driver rejects it
+    (known DML ConvTranspose bug on some NVIDIA drivers), a flag file records
+    it and future loads go straight to CPU — no error spam. Set
+    TTS_FORCE_DML=1 (or delete the flag file) to retry after a driver update.
+    """
     global _KOKORO
     if _KOKORO is not None:
         return _KOKORO
@@ -1224,16 +1230,38 @@ def _get_kokoro() -> Any:
     kokoro = Kokoro(str(model), str(voices_bin))
     # kokoro-onnx does not expose providers; try GPU (DirectML) by swapping the
     # session, and silently fall back to the already-created CPU session if the
-    # driver rejects it (known DML ConvTranspose bug on some NVIDIA drivers).
-    try:
+    # driver rejects it.
+    force = os.environ.get("TTS_FORCE_DML", "").strip()
+    flag = _TTS_DIR / "dml_failed.flag"
+    # The constructor's default session may auto-pick DML (and crash on buggy
+    # drivers), so ALWAYS set the session explicitly: CPU unless DML is allowed
+    # and actually works.
+    so = ort.SessionOptions()
+    so.log_severity_level = 4  # FATAL — hide DML driver error prints
+    dml_ok = False
+    if force or not flag.exists():
+        try:
+            kokoro.sess = ort.InferenceSession(
+                str(model), sess_options=so,
+                providers=["DmlExecutionProvider", "CPUExecutionProvider"],
+            )
+            kokoro.create("test", voice="am_michael", speed=1.0, lang="en-us")
+            dml_ok = True
+        except Exception:
+            dml_ok = False
+    if not dml_ok:
         kokoro.sess = ort.InferenceSession(
-            str(model), providers=["DmlExecutionProvider", "CPUExecutionProvider"]
+            str(model), sess_options=so,
+            providers=["CPUExecutionProvider"],
         )
-        kokoro.create("test", voice="am_michael", speed=1.0, lang="en-us")
-    except Exception:
-        kokoro.sess = ort.InferenceSession(
-            str(model), providers=["CPUExecutionProvider"]
-        )
+        if not force:
+            try:
+                flag.write_text(
+                    "DML rejected by the graphics driver — TTS on CPU.\n"
+                    "Delete this file (or set TTS_FORCE_DML=1) after a driver update.\n"
+                )
+            except Exception:
+                pass
     _KOKORO = kokoro
     return _KOKORO
 
