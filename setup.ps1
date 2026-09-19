@@ -23,6 +23,17 @@ try {
     Write-Warning "Ollama is not reachable at localhost:11434 - start the Ollama app before running the agent."
 }
 
+Write-Host "== 4/3 Neural voice model (Kokoro, ~340 MB, stored outside the repo) ==" -ForegroundColor Cyan
+$ttsDir = Join-Path $PSScriptRoot ".agent\tts"
+New-Item -ItemType Directory -Force -Path $ttsDir | Out-Null
+if ((Test-Path "$ttsDir\kokoro-v1.0.onnx") -and (Test-Path "$ttsDir\voices-v1.0.bin")) {
+    Write-Host "Kokoro model already present." -ForegroundColor Green
+} else {
+    curl.exe -sL -o "$ttsDir\kokoro-v1.0.onnx" "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.onnx"
+    curl.exe -sL -o "$ttsDir\voices-v1.0.bin" "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin"
+    Write-Host "Kokoro voice model downloaded." -ForegroundColor Green
+}
+
 Write-Host ""
 Write-Host "Setup complete." -ForegroundColor Green
 Write-Host "  Text chat : python agent.py"

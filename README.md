@@ -52,12 +52,16 @@ python agent.py --voice
 ```
 
 The agent listens on your microphone (Google's free web speech API — needs
-internet), thinks, uses its tools, then **says the answer aloud** through the
-Windows built-in voice. It addresses you as *sir* and reports task status out
-loud ("Done, sir." / "That failed, sir — …"). Say **goodbye** to quit.
+internet), thinks, uses its tools, then **says the answer aloud**. It
+addresses you as *sir* and reports task status out loud ("Done, sir." /
+"That failed, sir — …"). Say **goodbye** to quit.
 
-Optional extra voices/languages for TTS: Windows Settings → Time & Language →
-Speech. Voice mode also works one-shot: `python agent.py --voice "what's the time?"`
+**Voice engine:** Kokoro-82M (Apache-2.0, fully offline, natural neural
+voice) — runs on CPU at ~2× realtime, and automatically on your GPU
+(DirectML) when the graphics driver supports it. Voice is set with
+`OLLAMA_TTS_VOICE` (default `am_michael`, US male; try `af_heart`, `bm_george`,
+`af_bella`). Falls back to pyttsx3/SAPI if the model is missing. One-shot
+voice mode also works: `python agent.py --voice "what's the time?"`
 
 ## Features
 

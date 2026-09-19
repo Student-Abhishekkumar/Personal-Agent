@@ -4,3 +4,6 @@ pyautogui
 SpeechRecognition
 pyaudio
 pyttsx3
+kokoro-onnx
+onnxruntime-directml
+soundfile

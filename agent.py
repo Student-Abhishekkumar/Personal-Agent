@@ -1199,6 +1199,62 @@ def press_key(key: str, presses: int = 1) -> str:
 
 
 _TTS_ENGINE: Any = None
+_KOKORO: Any = None
+
+# Kokoro-82M (Apache-2.0, offline, open source) voices. OLLAMA_TTS_VOICE
+# matches part of a voice id; popular ones: am_michael (US male), af_heart
+# (US female), bm_george (UK male), af_bella, am_adam.
+_KOKORO_VOICE = os.environ.get("OLLAMA_TTS_VOICE", "am_michael").lower()
+_TTS_DIR = PROJECT_DIR / ".agent" / "tts"
+
+
+def _get_kokoro() -> Any:
+    """Load the Kokoro ONNX TTS engine (GPU DirectML first, CPU fallback)."""
+    global _KOKORO
+    if _KOKORO is not None:
+        return _KOKORO
+    import onnxruntime as ort
+    from kokoro_onnx import Kokoro
+
+    model, voices_bin = _TTS_DIR / "kokoro-v1.0.onnx", _TTS_DIR / "voices-v1.0.bin"
+    if not model.exists() or not voices_bin.exists():
+        raise FileNotFoundError(
+            "Kokoro model not found in .agent/tts/ — run setup.ps1 (step 4)"
+        )
+    kokoro = Kokoro(str(model), str(voices_bin))
+    # kokoro-onnx does not expose providers; try GPU (DirectML) by swapping the
+    # session, and silently fall back to the already-created CPU session if the
+    # driver rejects it (known DML ConvTranspose bug on some NVIDIA drivers).
+    try:
+        kokoro.sess = ort.InferenceSession(
+            str(model), providers=["DmlExecutionProvider", "CPUExecutionProvider"]
+        )
+        kokoro.create("test", voice="am_michael", speed=1.0, lang="en-us")
+    except Exception:
+        kokoro.sess = ort.InferenceSession(
+            str(model), providers=["CPUExecutionProvider"]
+        )
+    _KOKORO = kokoro
+    return _KOKORO
+
+
+def _kokoro_speak(text: str) -> None:
+    """Generate and play text sentence-by-sentence (fast first sound)."""
+    import re as _re
+    import winsound
+
+    import soundfile as sf
+
+    engine = _get_kokoro()
+    voices_available = getattr(engine, "voices", {}) or {}
+    voice = _KOKORO_VOICE if _KOKORO_VOICE in voices_available else "am_michael"
+    tmp = _TTS_DIR / "say.wav"
+    # speak sentence-by-sentence: first sound starts ASAP
+    sentences = [s.strip() for s in _re.split(r"(?<=[.!?])\s+", text) if s.strip()]
+    for sentence in sentences or [text]:
+        audio, sr = engine.create(sentence, voice=voice, speed=1.0, lang="en-us")
+        sf.write(tmp, audio, sr)
+        winsound.PlaySound(str(tmp), winsound.SND_FILENAME)
 
 
 def _get_tts() -> Any:
@@ -1391,7 +1447,11 @@ def open_url(url: str) -> str:
 
 
 def speak(text: str) -> str:
-    """Speak text aloud through the speakers (Windows built-in voice).
+    """Speak text aloud through the speakers.
+
+    Prefers the local open-source Kokoro-82M neural voice (fast, natural,
+    offline, GPU-accelerated when the driver allows); falls back to pyttsx3
+    and finally to the Windows SAPI voice.
 
     Use this to confirm to the user, out loud, what you did or what went
     wrong — e.g. after finishing desktop tasks.
@@ -1405,27 +1465,31 @@ def speak(text: str) -> str:
     if sys.platform != "win32":
         return "speak() is only supported on Windows."
     try:
-        engine = _get_tts()
-        engine.say(text)
-        engine.runAndWait()
-        return f"Spoke {len(text)} characters aloud."
+        _kokoro_speak(text)
+        return f"Spoke {len(text)} characters aloud (Kokoro)."
     except Exception as exc:
-        # Fallback: Windows SAPI via PowerShell (separate process).
-        safe = text.replace("'", "''").replace('"', "")
-        script = (
-            "Add-Type -AssemblyName System.Speech; "
-            "$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
-            f"$s.Speak('{safe}')"
-        )
         try:
-            subprocess.run(
-                ["powershell", "-NoProfile", "-Command", script],
-                capture_output=True, timeout=120,
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-            )
-            return f"Spoke via SAPI fallback ({exc})."
+            engine = _get_tts()
+            engine.say(text)
+            engine.runAndWait()
+            return f"Spoke via pyttsx3 fallback ({type(exc).__name__})."
         except Exception as exc2:
-            return f"Could not speak: {exc2}"
+            # Last resort: Windows SAPI via PowerShell (separate process).
+            safe = text.replace("'", "''").replace('"', "")
+            script = (
+                "Add-Type -AssemblyName System.Speech; "
+                "$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
+                f"$s.Speak('{safe}')"
+            )
+            try:
+                subprocess.run(
+                    ["powershell", "-NoProfile", "-Command", script],
+                    capture_output=True, timeout=120,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                )
+                return f"Spoke via SAPI fallback ({type(exc2).__name__})."
+            except Exception as exc3:
+                return f"Could not speak: {exc3}"
 
 
 TOOLS: list[Callable[..., str]] = [
