@@ -58,7 +58,7 @@ from pydantic_ai.usage import UsageLimits
 # Configuration
 # ---------------------------------------------------------------------------
 
-AGENT_NAME = "Personal Agent"
+AGENT_NAME = "Buddy"
 
 # Default chat model (user preference: ornith-1.5:9b). NOTE: ornith does not
 # advertise Ollama's "tools" capability, so complex tool-calling can fail with
@@ -1267,8 +1267,15 @@ def _get_kokoro() -> Any:
 
 
 def _kokoro_speak(text: str) -> None:
-    """Generate and play text sentence-by-sentence (fast first sound)."""
+    """Speak text with sub-second first sound.
+
+    Splits into short phrases, generates and plays them in a pipelined
+    background thread: playback of phrase N overlaps generation of N+1, so
+    speech starts in ~0.5-1s instead of after the whole text is rendered.
+    """
+    import queue
     import re as _re
+    import threading
     import winsound
 
     import soundfile as sf
@@ -1277,10 +1284,33 @@ def _kokoro_speak(text: str) -> None:
     voices_available = getattr(engine, "voices", {}) or {}
     voice = _KOKORO_VOICE if _KOKORO_VOICE in voices_available else "am_michael"
     tmp = _TTS_DIR / "say.wav"
-    # speak sentence-by-sentence: first sound starts ASAP
-    sentences = [s.strip() for s in _re.split(r"(?<=[.!?])\s+", text) if s.strip()]
-    for sentence in sentences or [text]:
-        audio, sr = engine.create(sentence, voice=voice, speed=1.0, lang="en-us")
+
+    # Split into speakable phrases: sentence end, or a clause comma —
+    # short enough that a phrase renders in well under a second.
+    phrases = [
+        p.strip()
+        for p in _re.split(r"(?<=[.!?,:;])\s+", text)
+        if p.strip()
+    ] or [text]
+
+    q: "queue.Queue[Optional[tuple[Any, int]]]" = queue.Queue(maxsize=4)
+
+    def generate() -> None:
+        try:
+            for phrase in phrases:
+                audio, sr = engine.create(phrase, voice=voice, speed=1.05, lang="en-us")
+                q.put((audio, sr))
+            q.put(None)
+        except Exception:
+            q.put(None)
+
+    threading.Thread(target=generate, daemon=True).start()
+
+    while True:
+        item = q.get()
+        if item is None:
+            break
+        audio, sr = item
         sf.write(tmp, audio, sr)
         winsound.PlaySound(str(tmp), winsound.SND_FILENAME)
 
@@ -1571,9 +1601,10 @@ def build_system_prompt(settings: Settings) -> str:
         f"""
         You are {AGENT_NAME}, a capable personal AI assistant running fully
         locally — in the spirit of Jarvis from Iron Man: calm, competent,
-        quietly witty. You help with coding, writing, research, system tasks
-        and everyday questions — using your tools whenever they would make
-        your answer better or more accurate.
+        quietly witty. Your name is Buddy; if anyone asks who you are, you are
+        Buddy, the user's personal AI assistant. You help with coding, writing,
+        research, system tasks and everyday questions — using your tools
+        whenever they would make your answer better or more accurate.
         You address the user as "sir" (naturally, not in every sentence).
         After completing a task, say plainly whether it succeeded or failed —
         e.g. "Done, sir." / "I'm afraid that failed, sir — <reason>." — and
